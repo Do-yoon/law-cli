@@ -1,11 +1,18 @@
 [project]
 name = "law-cli"
-version = "0.1.0"
-description = "대한민국 법령 조문 조회 CLI — legalize-kr 아카이브에서 원하는 법 조항을 시점 지정으로 조회합니다"
+version = "0.2.0"
+description = "대한민국 법령 조문 조회 CLI — legalize-kr 아카이브에서 원하는 법 조항을 시점 지정으로 조회하고, 임베딩 모델로 의미 검색합니다"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = []
+
+[project.optional-dependencies]
+# 의미 검색(--semantic) 전용 — 코어 조회 기능은 의존성 0을 유지한다
+semantic = [
+    "sentence-transformers>=3.0",
+    "psycopg[binary]>=3.1",
+]
 
 [project.scripts]
 law-cli = "law_cli:main"

@@ -3,6 +3,10 @@
 법령명과 조번호를 입력하면 해당 조문을 **출처(일차자료) URL과 함께** 보여주는 명령줄 도구입니다.
 법률 지식이나 Git 지식이 없어도 "일차자료를 정확히 읽는" 첫걸음이 되도록 만들었습니다.
 
+조문 위치를 모를 때는 **의미 검색**(`--semantic`)으로 자연어 질의를 할 수 있습니다 —
+Hugging Face 임베딩 모델(기본 [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3))과
+PostgreSQL([pgvector](https://github.com/pgvector/pgvector)) 벡터스토어를 사용합니다.
+
 데이터는 [legalize-kr](https://github.com/legalize-kr/legalize-kr) 아카이브(국가법령정보센터 공공데이터 기반)를 사용합니다.
 
 ## 설치
@@ -36,6 +40,9 @@ law-cli --search 스토킹
 
 # 시행령·시행규칙 조회
 law-cli 민법 --type 시행령 --toc
+
+# 자연어 의미 검색 — 조문 위치를 모를 때 (아래 "의미 검색" 참고)
+law-cli --semantic "이혼할 때 재산을 나누는 규정" --law-filter 민법
 ```
 
 ### `--as-of` — 그 날짜 당시의 조문
@@ -60,6 +67,47 @@ law-cli 민법 --type 시행령 --toc
 출처(일차자료): https://www.law.go.kr/법령/스토킹범죄의처벌등에관한법률
 이 출력은 참고용 조회 결과입니다. 반드시 위 출처의 원문으로 확인하세요.
 ```
+
+## 의미 검색 (`--semantic`)
+
+조문을 조 단위로 청킹해 임베딩하고 PostgreSQL(pgvector)에 저장한 뒤,
+자연어 질의와의 cosine 유사도로 top-k 조문을 찾습니다.
+
+### 준비
+
+```bash
+# 1) 추가 의존성 설치
+uv sync --extra semantic          # 개발 중
+uv tool install "law-cli[semantic]"   # 도구로 설치하는 경우
+
+# 2) PostgreSQL + pgvector (macOS 예시)
+brew install postgresql@17 pgvector
+brew services start postgresql@17
+# 데이터베이스(기본: law_cli)는 첫 실행 시 자동 생성됩니다
+```
+
+### 사용
+
+```bash
+# 법령명을 좁혀서 검색 (권장 — 처음 한 번만 임베딩하고 이후엔 재사용)
+law-cli --semantic "이혼할 때 재산을 나누는 규정" --law-filter 민법
+
+# 다른 Hugging Face 임베딩 모델 사용
+law-cli --semantic "질의문" --model intfloat/multilingual-e5-large --law-filter 민법
+
+# 결과 개수·법령 종류 지정
+law-cli --semantic "질의문" --law-filter 민법 --top-k 10 --type 시행령
+
+# 아카이브 전체 색인 (3천여 법령 — 오래 걸림, 명시적 동의 필요)
+law-cli --semantic "질의문" --index-all
+```
+
+- 임베딩은 (모델, 법령, 파일 해시) 기준으로 **증분 동기화**됩니다 —
+  아카이브를 `git pull`로 갱신하면 바뀐 법령만 다시 임베딩합니다.
+- 검색 결과에는 유사도·미리보기·출처 URL과 함께, 원문을 정확히 볼 수 있는
+  결정적 조회 명령(`law-cli 법령명 조번호`)이 안내됩니다.
+- 데이터베이스명은 `--db` 옵션 또는 환경변수 `LAW_CLI_DB`로 바꿀 수 있습니다.
+- 벡터스토어는 아카이브의 파생물입니다 — 언제든 `DROP DATABASE` 후 재생성해도 됩니다.
 
 ## 저장소 위치 지정
 

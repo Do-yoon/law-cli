@@ -221,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
             "  law-cli 스토킹범죄의처벌등에관한법률 18 --as-of 2023-06-30\n"
             "  law-cli 민법 --toc                   # 조문 목차\n"
             "  law-cli --search 스토킹              # 법령명 검색\n"
+            '  law-cli --semantic "재산 분할" --law-filter 민법   # 자연어 의미 검색\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -233,9 +234,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--toc", action="store_true", help="조문 목차를 출력")
     parser.add_argument("--search", metavar="키워드", help="키워드로 법령명을 검색")
     parser.add_argument("--repo", help="legalize-kr 저장소 경로")
+
+    semantic_group = parser.add_argument_group(
+        "의미 검색 (Hugging Face 임베딩 모델 + PostgreSQL/pgvector)"
+    )
+    semantic_group.add_argument("--semantic", metavar="질의문",
+                                help='자연어로 조문을 의미 검색 (예: --semantic "재산 분할 청구")')
+    semantic_group.add_argument("--model", default=None, metavar="HF모델",
+                                help="Hugging Face 임베딩 모델명 (기본: BAAI/bge-m3)")
+    semantic_group.add_argument("--top-k", type=int, default=5, metavar="N",
+                                help="결과 개수 (기본: 5)")
+    semantic_group.add_argument("--law-filter", metavar="키워드",
+                                help="법령명 부분일치로 검색·색인 범위를 좁힘 (권장)")
+    semantic_group.add_argument("--db", default=None, metavar="DB명",
+                                help="PostgreSQL 데이터베이스명 (기본: $LAW_CLI_DB 또는 law_cli)")
+    semantic_group.add_argument("--index-all", action="store_true",
+                                help="--law-filter 없이 아카이브 전체 색인을 허용")
     args = parser.parse_args(argv)
 
     repo = find_repo(args.repo)
+
+    if args.semantic:
+        from . import semantic  # 무거운 의존성은 --semantic 사용 시에만 로드
+
+        return semantic.run(
+            repo, args.semantic,
+            model=args.model or semantic.DEFAULT_MODEL,
+            law_type=args.type,
+            law_filter=args.law_filter,
+            top_k=args.top_k,
+            db=args.db or semantic.DEFAULT_DB,
+            index_all=args.index_all,
+        )
 
     if args.search:
         hits = suggest_laws(repo, args.search)
