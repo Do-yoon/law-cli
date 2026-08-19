@@ -3,9 +3,10 @@
 법령명과 조번호를 입력하면 해당 조문을 **출처(일차자료) URL과 함께** 보여주는 명령줄 도구입니다.
 법률 지식이나 Git 지식이 없어도 "일차자료를 정확히 읽는" 첫걸음이 되도록 만들었습니다.
 
-조문 위치를 모를 때는 **의미 검색**(`--semantic`)으로 자연어 질의를 할 수 있습니다 —
-Hugging Face 임베딩 모델(기본 [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3))과
-PostgreSQL([pgvector](https://github.com/pgvector/pgvector)) 벡터스토어를 사용합니다.
+조문 위치를 모를 때는 **하이브리드 검색**(`--semantic`)으로 자연어 질의를 할 수 있습니다 —
+Hugging Face 임베딩 모델(기본 [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3))의 의미 검색과
+[Kiwi](https://github.com/bab2min/kiwipiepy) 형태소 분석 기반 tsvector 어휘 검색을
+PostgreSQL([pgvector](https://github.com/pgvector/pgvector)) 위에서 RRF로 융합합니다.
 
 데이터는 [legalize-kr](https://github.com/legalize-kr/legalize-kr) 아카이브(국가법령정보센터 공공데이터 기반)를 사용합니다.
 
@@ -68,10 +69,17 @@ law-cli --semantic "이혼할 때 재산을 나누는 규정" --law-filter 민�
 이 출력은 참고용 조회 결과입니다. 반드시 위 출처의 원문으로 확인하세요.
 ```
 
-## 의미 검색 (`--semantic`)
+## 하이브리드 검색 (`--semantic`)
 
-조문을 조 단위로 청킹해 임베딩하고 PostgreSQL(pgvector)에 저장한 뒤,
-자연어 질의와의 cosine 유사도로 top-k 조문을 찾습니다.
+조문을 조 단위로 청킹해 두 갈래로 색인합니다:
+
+1. **의미 경로(주)** — 임베딩 모델로 조문 원문을 벡터화 (pgvector, cosine).
+   일상어 질의와 조문 언어의 어휘 간극을 의미로 메웁니다.
+2. **어휘 경로(보조)** — Kiwi 형태소 분석으로 내용어만 추출해 tsvector로 색인.
+   조문에 그대로 나오는 단어("과태료", "접근")의 정확 일치를 보장합니다.
+
+질의도 같은 두 경로로 검색한 뒤 **RRF(Reciprocal Rank Fusion)** 로 순위를
+융합해 top-k를 출력합니다. 결과에는 경로별 순위(의미 n위 · 어휘 m위)가 표시됩니다.
 
 ### 준비
 

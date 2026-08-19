@@ -1,11 +1,17 @@
-# 의미 검색 — Hugging Face 임베딩 모델 + PostgreSQL(pgvector) 벡터스토어
+# 하이브리드 의미 검색 — HF 임베딩 모델 + Kiwi 형태소 tsvector + PostgreSQL(pgvector)
 #
-# 흐름: legalize-kr 조문을 조 단위로 청킹 → 임베딩 → law_chunks 테이블에 저장
-#       → 질의문 임베딩과의 cosine 거리로 top-k 조회.
+# 흐름: legalize-kr 조문을 조 단위로 청킹 → ① 임베딩(원문 그대로) ② Kiwi 형태소
+#       토큰(어휘 색인용) 두 갈래로 law_chunks 에 저장 → 질의를 같은 두 경로로
+#       검색한 뒤 RRF(Reciprocal Rank Fusion)로 순위를 융합한다.
+# - 임베딩(주 경로): 일상어 질의와 조문 언어의 어휘 간극을 의미로 메운다.
+# - tsvector(보조 경로): 조문에 그대로 나오는 단어의 정확 일치를 보장한다.
+#   한국어는 조사·어미 때문에 형태소 분석 없이는 tsvector 재현율이 나오지 않아
+#   Kiwi로 내용어만 추출해 'simple' 설정으로 색인한다. 임베딩 모델에는 형태소
+#   분석 결과를 먹이지 않는다 (자연문으로 학습된 모델이라 오히려 품질 저하).
 # - 저장 행은 (모델명, 법령, 종류, 파일 해시) 기준으로 증분 동기화한다.
 #   파일이 바뀌면 해당 법령 행을 지우고 다시 임베딩한다.
-# - 무거운 의존성(sentence-transformers, psycopg)은 이 모듈에서만 임포트한다.
-#   기존 조회 기능은 여전히 표준 라이브러리만으로 동작한다.
+# - 무거운 의존성(sentence-transformers, kiwipiepy, psycopg)은 이 모듈에서만
+#   임포트한다. 기존 조회 기능은 여전히 표준 라이브러리만으로 동작한다.
 from __future__ import annotations
 
 import hashlib
@@ -26,6 +32,13 @@ _INDEX_ALL_THRESHOLD = 200
 
 # 임베딩 함수: 문자열 목록 → 정규화된 벡터 목록
 EmbedFn = Callable[[Sequence[str]], Sequence[Sequence[float]]]
+# 토큰화 함수: 문자열 목록 → 공백으로 이어붙인 형태소 토큰 문자열 목록
+TokenizeFn = Callable[[Sequence[str]], list[str]]
+
+# RRF 융합 상수 (관례값 60 — 상위권 순위 차이를 완만하게 반영)
+_RRF_K = 60
+# 융합 전 각 경로에서 가져올 후보 폭
+_POOL_MIN = 50
 
 _MISSING_DEPS_MSG = (
     "의미 검색에는 추가 의존성이 필요합니다. 다음으로 설치하세요:\n"
@@ -117,10 +130,18 @@ class PgStore:
       chunk_text TEXT NOT NULL,
       source_url TEXT NOT NULL DEFAULT '',
       file_hash  TEXT NOT NULL,
-      embedding  VECTOR NOT NULL
+      embedding  VECTOR NOT NULL,
+      -- 어휘 검색 경로: Kiwi 형태소 토큰(공백 구분) → 'simple' tsvector
+      tokens     TEXT NOT NULL DEFAULT '',
+      tsv        TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', tokens)) STORED
     );
+    -- 구버전 테이블 마이그레이션 (컬럼이 없으면 추가 — 기존 행은 재동기화로 채운다)
+    ALTER TABLE law_chunks ADD COLUMN IF NOT EXISTS tokens TEXT NOT NULL DEFAULT '';
+    ALTER TABLE law_chunks ADD COLUMN IF NOT EXISTS tsv TSVECTOR
+      GENERATED ALWAYS AS (to_tsvector('simple', tokens)) STORED;
     CREATE INDEX IF NOT EXISTS law_chunks_sync_idx
       ON law_chunks (model, law_name, law_type);
+    CREATE INDEX IF NOT EXISTS law_chunks_tsv_idx ON law_chunks USING gin (tsv);
     """
 
     def __init__(self, dbname: str):
@@ -161,16 +182,22 @@ class PgStore:
         self.conn.close()
 
     def synced_hashes(self, model: str) -> dict[tuple[str, str], str]:
-        """이미 저장된 (법령명, 종류) → 파일 해시."""
+        """이미 저장된 (법령명, 종류) → 파일 해시.
+
+        토큰이 비어 있는 행이 하나라도 있으면 (구버전 스키마로 색인된 법령)
+        목록에서 제외해 재동기화를 유도한다.
+        """
         with self.conn.cursor() as cur:
             cur.execute(
-                "SELECT DISTINCT law_name, law_type, file_hash FROM law_chunks WHERE model = %s",
+                "SELECT law_name, law_type, file_hash FROM law_chunks WHERE model = %s"
+                " GROUP BY law_name, law_type, file_hash HAVING bool_and(tokens <> '')",
                 (model,),
             )
             return {(n, t): h for n, t, h in cur.fetchall()}
 
     def replace_law(self, model: str, law_name: str, law_type: str,
-                    file_hash: str, chunks: list[Chunk], vectors: Sequence[Sequence[float]]):
+                    file_hash: str, chunks: list[Chunk],
+                    vectors: Sequence[Sequence[float]], tokens: Sequence[str]):
         """한 법령 파일의 행을 통째로 교체한다 (증분 동기화 단위)."""
         with self.conn.transaction(), self.conn.cursor() as cur:
             cur.execute(
@@ -180,36 +207,55 @@ class PgStore:
             cur.executemany(
                 "INSERT INTO law_chunks"
                 " (model, law_name, law_type, law_title, label, title,"
-                "  chunk_text, source_url, file_hash, embedding)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)",
+                "  chunk_text, source_url, file_hash, embedding, tokens)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)",
                 [
                     (model, c.law_name, c.law_type, c.law_title, c.label, c.title,
-                     c.text, c.source_url, file_hash, _vec_text(v))
-                    for c, v in zip(chunks, vectors)
+                     c.text, c.source_url, file_hash, _vec_text(v), tk)
+                    for c, v, tk in zip(chunks, vectors, tokens)
                 ],
             )
 
+    _SELECT = ("SELECT id, law_name, law_type, law_title, label, title,"
+               " chunk_text, source_url FROM law_chunks WHERE model = %s")
+
+    @staticmethod
+    def _rows_to_hits(rows) -> list[tuple[int, Chunk]]:
+        return [(rid, Chunk(n, t, lt, la, ti, tx, u))
+                for rid, n, t, lt, la, ti, tx, u in rows]
+
     def search(self, model: str, query_vec: Sequence[float],
-               law_names: Sequence[str] | None, top_k: int) -> list[tuple[Chunk, float]]:
-        """cosine 유사도 top-k. law_names가 있으면 해당 법령으로 한정한다."""
+               law_names: Sequence[str] | None, limit: int) -> list[tuple[int, Chunk]]:
+        """의미 경로: cosine 거리 오름차순 상위 limit. (행 id, 청크) 순위 목록."""
         qv = _vec_text(query_vec)
-        sql = (
-            "SELECT law_name, law_type, law_title, label, title, chunk_text, source_url,"
-            " 1 - (embedding <=> %s::vector) AS score"
-            " FROM law_chunks WHERE model = %s"
-        )
-        params: list = [qv, model]
+        sql, params = self._SELECT, [model]
         if law_names is not None:
             sql += " AND law_name = ANY(%s)"
             params.append(list(law_names))
         sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
-        params += [qv, top_k]
+        params += [qv, limit]
         with self.conn.cursor() as cur:
             cur.execute(sql, params)
-            return [
-                (Chunk(n, t, lt, la, ti, tx, u), float(s))
-                for n, t, lt, la, ti, tx, u, s in cur.fetchall()
-            ]
+            return self._rows_to_hits(cur.fetchall())
+
+    def lexical_search(self, model: str, query_tokens: Sequence[str],
+                       law_names: Sequence[str] | None, limit: int) -> list[tuple[int, Chunk]]:
+        """어휘 경로: 형태소 토큰 OR 매칭을 ts_rank_cd 내림차순으로 상위 limit."""
+        # to_tsquery 구문 문자를 제거하고 OR로 잇는다 (일반인 질의는 재현율 우선)
+        safe = [t for t in ("".join(ch for ch in tok if ch.isalnum()) for tok in query_tokens) if t]
+        if not safe:
+            return []
+        tsquery = " | ".join(safe)
+        sql = self._SELECT + " AND tsv @@ to_tsquery('simple', %s)"
+        params: list = [model, tsquery]
+        if law_names is not None:
+            sql += " AND law_name = ANY(%s)"
+            params.append(list(law_names))
+        sql += " ORDER BY ts_rank_cd(tsv, to_tsquery('simple', %s)) DESC LIMIT %s"
+        params += [tsquery, limit]
+        with self.conn.cursor() as cur:
+            cur.execute(sql, params)
+            return self._rows_to_hits(cur.fetchall())
 
 
 def load_embedder(model_name: str) -> EmbedFn:
@@ -228,9 +274,48 @@ def load_embedder(model_name: str) -> EmbedFn:
     return embed
 
 
+# 어휘 색인에 남길 Kiwi 품사: 명사류·수사·외래어/한자/숫자·동사/형용사 어간·어근
+_KIWI_KEEP_TAGS = frozenset(
+    {"NNG", "NNP", "NNB", "NR", "SL", "SH", "SN", "VV", "VA", "XR"}
+)
+
+
+def load_tokenizer() -> TokenizeFn:
+    """Kiwi 형태소 분석기를 로드해 내용어 토큰화 함수를 만든다 (어휘 검색 전용)."""
+    try:
+        from kiwipiepy import Kiwi
+    except ImportError:
+        sys.exit(_MISSING_DEPS_MSG)
+    kiwi = Kiwi()
+
+    def tokenize(texts: Sequence[str]) -> list[str]:
+        return [
+            " ".join(tok.form for tok in kiwi.tokenize(t) if tok.tag in _KIWI_KEEP_TAGS)
+            for t in texts
+        ]
+
+    return tokenize
+
+
+def rrf_fuse(vec_hits: Sequence[tuple[int, Chunk]], lex_hits: Sequence[tuple[int, Chunk]],
+             top_k: int, k: int = _RRF_K) -> list[tuple[Chunk, int | None, int | None]]:
+    """두 경로의 순위를 RRF(Σ 1/(k+순위))로 융합해 (청크, 의미순위, 어휘순위)를 반환."""
+    scores: dict[int, float] = {}
+    entries: dict[int, dict] = {}
+    for key, hits in (("vec", vec_hits), ("lex", lex_hits)):
+        for rank, (rid, chunk) in enumerate(hits, 1):
+            scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
+            e = entries.setdefault(rid, {"chunk": chunk, "vec": None, "lex": None})
+            e[key] = rank
+    order = sorted(scores, key=lambda rid: -scores[rid])
+    return [(entries[r]["chunk"], entries[r]["vec"], entries[r]["lex"])
+            for r in order[:top_k]]
+
+
 def sync(store: PgStore, repo: Path, model: str, law_type: str,
-         files: list[tuple[str, Path]], embed_fn: EmbedFn) -> int:
-    """변경·미등록 파일만 임베딩해 저장한다. 임베딩한 파일 수를 반환."""
+         files: list[tuple[str, Path]], embed_fn: EmbedFn,
+         tokenize_fn: TokenizeFn) -> int:
+    """변경·미등록 파일만 임베딩·토큰화해 저장한다. 처리한 파일 수를 반환."""
     synced = store.synced_hashes(model)
     done = 0
     stale = []
@@ -242,8 +327,10 @@ def sync(store: PgStore, repo: Path, model: str, law_type: str,
         stale.append((law_name, file_hash, chunks))
     for i, (law_name, file_hash, chunks) in enumerate(stale, 1):
         print(f"임베딩 [{i}/{len(stale)}] {law_name} ({len(chunks)}개 조문)", file=sys.stderr)
-        vectors = embed_fn([c.text for c in chunks]) if chunks else []
-        store.replace_law(model, law_name, law_type, file_hash, chunks, vectors)
+        texts = [c.text for c in chunks]
+        vectors = embed_fn(texts) if chunks else []
+        tokens = tokenize_fn(texts) if chunks else []
+        store.replace_law(model, law_name, law_type, file_hash, chunks, vectors, tokens)
         done += 1
     return done
 
@@ -268,8 +355,12 @@ def _article_arg(label: str) -> str:
 
 def run(repo: Path, query: str, *, model: str, law_type: str,
         law_filter: str | None, top_k: int, db: str, index_all: bool,
-        store: PgStore | None = None, embed_fn: EmbedFn | None = None) -> int:
-    """의미 검색 실행 — 동기화 후 top-k를 출력한다. (store/embed_fn은 테스트 주입용)"""
+        store: PgStore | None = None, embed_fn: EmbedFn | None = None,
+        tokenize_fn: TokenizeFn | None = None) -> int:
+    """하이브리드 검색 실행 — 동기화 후 RRF 융합 top-k를 출력한다.
+
+    store/embed_fn/tokenize_fn 은 테스트 주입용.
+    """
     files = collect_law_files(repo, law_type, law_filter)
     if not files:
         print(f"검색 대상 법령이 없습니다 (--law-filter {law_filter!r}, --type {law_type}).")
@@ -286,24 +377,33 @@ def run(repo: Path, query: str, *, model: str, law_type: str,
         )
         return 1
 
+    tokenize_fn = tokenize_fn or load_tokenizer()
     embed_fn = embed_fn or load_embedder(model)
-    sync(store, repo, model, law_type, files, embed_fn)
+    sync(store, repo, model, law_type, files, embed_fn, tokenize_fn)
 
+    names = [n for n, _ in files]
+    pool = max(top_k * 10, _POOL_MIN)
     query_vec = embed_fn([query])[0]
-    hits = store.search(model, query_vec, [n for n, _ in files], top_k)
+    query_tokens = tokenize_fn([query])[0].split()
+    vec_hits = store.search(model, query_vec, names, pool)
+    lex_hits = store.lexical_search(model, query_tokens, names, pool)
+    hits = rrf_fuse(vec_hits, lex_hits, top_k)
 
     print("=" * 60)
-    print(f'의미 검색: "{query}"')
+    print(f'하이브리드 검색: "{query}"')
     scope = f"--law-filter {law_filter}" if law_filter else "전체"
-    print(f"  모델: {model} / 대상: {len(files)}개 법령 ({scope}) / DB: {db}")
+    print(f"  모델: {model} + 형태소 tsvector / 대상: {len(files)}개 법령 ({scope}) / DB: {db}")
     print("=" * 60)
     if not hits:
         print("결과가 없습니다.")
         return 1
-    for rank, (c, score) in enumerate(hits, 1):
+    for rank, (c, vec_rank, lex_rank) in enumerate(hits, 1):
         head = f"{c.label}" + (f" ({c.title})" if c.title else "")
+        paths = " · ".join(
+            f"{name} {r}위" for name, r in (("의미", vec_rank), ("어휘", lex_rank)) if r
+        )
         print()
-        print(f"[{rank}] 유사도 {score:.3f}  {c.law_title} ({c.law_type}) {head}")
+        print(f"[{rank}] ({paths})  {c.law_title} ({c.law_type}) {head}")
         # 미리보기: 헤딩 제외 첫 2줄
         preview = [l for l in c.text.split("\n")[1:] if l.strip()][:2]
         for line in preview:

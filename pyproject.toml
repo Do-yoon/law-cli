@@ -12,6 +12,7 @@ dependencies = []
 semantic = [
     "sentence-transformers>=3.0",
     "psycopg[binary]>=3.1",
+    "kiwipiepy>=0.18",  # 한국어 형태소 분석 — tsvector 어휘 색인용
 ]
 
 [project.scripts]
