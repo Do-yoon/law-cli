@@ -26,6 +26,20 @@ _ARTICLE_INPUT_RE = re.compile(r"^(?:제)?(\d+)(?:조)?(?:의(\d+))?$")
 
 _LAW_TYPES = ("법률", "시행령", "시행규칙")
 
+# --preset 법령 스코프 프리셋 — 일반인 상담 빈도가 높은 주제별 법령 묶음.
+# 부분일치가 아닌 정규화 동일 일치로 매칭한다 ("민법" 부분일치는 "난민법"까지 잡는다).
+# 구성 법령명은 legalize-kr 아카이브의 kr/ 디렉토리명 기준.
+PRESETS = {
+    "가족": ["민법", "가족관계의등록등에관한법률", "가사소송법"],
+    "노동": [
+        "근로기준법", "최저임금법", "근로자퇴직급여보장법",
+        "기간제및단시간근로자보호등에관한법률",
+        "남녀고용평등과일ㆍ가정양립지원에관한법률", "산업재해보상보험법",
+    ],
+    "주거": ["주택임대차보호법", "상가건물임대차보호법", "공동주택관리법"],
+    "교통": ["도로교통법", "교통사고처리특례법", "자동차손해배상보장법"],
+}
+
 # 저장소 자동 탐지 순서: 환경변수 → 현재 디렉토리 → 홈 디렉토리
 _DEFAULT_REPO_CANDIDATES = (
     Path("legalize-kr"),
@@ -246,11 +260,18 @@ def main(argv: list[str] | None = None) -> int:
                                 help="결과 개수 (기본: 5)")
     semantic_group.add_argument("--law-filter", metavar="키워드",
                                 help="법령명 부분일치로 검색·색인 범위를 좁힘 (권장)")
+    semantic_group.add_argument("--preset", choices=list(PRESETS),
+                                help="주제별 법령 묶음으로 범위를 좁힘 (예: --preset 가족)")
     semantic_group.add_argument("--db", default=None, metavar="DB명",
                                 help="PostgreSQL 데이터베이스명 (기본: $LAW_CLI_DB 또는 law_cli)")
     semantic_group.add_argument("--index-all", action="store_true",
                                 help="--law-filter 없이 아카이브 전체 색인을 허용")
     args = parser.parse_args(argv)
+
+    if args.preset and args.law_filter:
+        parser.error("--preset과 --law-filter는 함께 쓸 수 없습니다. 하나만 지정하세요.")
+    if args.preset and not args.semantic:
+        parser.error("--preset은 --semantic과 함께 사용합니다.")
 
     repo = find_repo(args.repo)
 
@@ -265,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             top_k=args.top_k,
             db=args.db or semantic.DEFAULT_DB,
             index_all=args.index_all,
+            preset=args.preset,
         )
 
     if args.search:

@@ -1,6 +1,8 @@
 # 하이브리드 검색 로직 테스트 — PostgreSQL·모델 다운로드 없이 가짜 스토어/임베더/토크나이저로 검증
+import pytest
 from conftest import FIXTURE, FIXTURE2, fake_embed, fake_tokenize
 
+import law_cli
 from law_cli import semantic
 from law_cli.semantic import Chunk, chunk_file, collect_law_files, rrf_fuse, split_articles
 
@@ -85,6 +87,43 @@ def test_collect_law_files_필터(repo):
     # 부분일치 + 공백 정규화
     assert [n for n, _ in collect_law_files(repo, "법률", "테스트 법률")] == ["테스트법률"]
     assert collect_law_files(repo, "시행령", None) == []
+
+
+def test_collect_law_files_목록은_동일_일치(repo):
+    # 프리셋용 목록 필터는 부분일치가 아니라 정규화 동일 일치
+    assert [n for n, _ in collect_law_files(repo, "법률", ["테스트 법률"])] == ["테스트법률"]
+    assert collect_law_files(repo, "법률", ["법률"]) == []  # "법률"은 부분 문자열일 뿐
+
+
+def test_run_preset_적용(repo, capsys, monkeypatch):
+    monkeypatch.setitem(semantic.PRESETS, "테스트주제", ["테스트법률"])
+    rc = _run(repo, "아무 질의", FakeStore(), preset="테스트주제", index_all=False)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "--preset 테스트주제" in out
+    assert "테스트 법률" in out and "다른 법률" not in out
+
+
+def test_cli_preset_law_filter_동시지정_거부(capsys):
+    with pytest.raises(SystemExit) as e:
+        law_cli.main(["--semantic", "질의", "--preset", "가족", "--law-filter", "민법"])
+    assert e.value.code == 2
+    assert "함께 쓸 수 없습니다" in capsys.readouterr().err
+
+
+def test_cli_preset은_semantic_전용(capsys):
+    with pytest.raises(SystemExit) as e:
+        law_cli.main(["민법", "1", "--preset", "가족"])
+    assert e.value.code == 2
+    assert "--semantic과 함께" in capsys.readouterr().err
+
+
+def test_presets_구성():
+    # 프리셋은 비어 있지 않고, 정규화 시 서로 동일해지는 중복이 없어야 한다
+    for name, laws in law_cli.PRESETS.items():
+        assert laws, name
+        normalized = [semantic.normalize_name(x) for x in laws]
+        assert len(set(normalized)) == len(normalized), name
 
 
 def test_rrf_융합_양경로_가산():

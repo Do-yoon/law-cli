@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import _ANY_HEADING_RE, _HEADING_RE, normalize_name, parse_frontmatter
+from . import _ANY_HEADING_RE, _HEADING_RE, PRESETS, normalize_name, parse_frontmatter
 
 DEFAULT_MODEL = "BAAI/bge-m3"
 DEFAULT_DB = os.environ.get("LAW_CLI_DB", "law_cli")
@@ -94,14 +94,26 @@ def chunk_file(law_name: str, law_type: str, raw_text: str) -> tuple[str, list[C
     return file_hash, chunks
 
 
-def collect_law_files(repo: Path, law_type: str, law_filter: str | None) -> list[tuple[str, Path]]:
-    """검색 대상 (법령명, 파일 경로) 목록. law_filter는 법령명 부분일치."""
-    want = normalize_name(law_filter) if law_filter else None
+def collect_law_files(repo: Path, law_type: str,
+                      law_filter: str | Sequence[str] | None) -> list[tuple[str, Path]]:
+    """검색 대상 (법령명, 파일 경로) 목록.
+
+    law_filter가 문자열이면 법령명 부분일치, 목록이면 정규화 동일 일치(프리셋용 —
+    부분일치는 "민법"이 "난민법"까지 잡으므로 프리셋은 정확한 법령명으로 좁힌다).
+    """
+    if isinstance(law_filter, str):
+        want = normalize_name(law_filter)
+        match = lambda name: want in name
+    elif law_filter is not None:
+        exact = {normalize_name(x) for x in law_filter}
+        match = lambda name: name in exact
+    else:
+        match = None
     out = []
     for d in sorted((repo / "kr").iterdir()):
         if not d.is_dir():
             continue
-        if want and want not in normalize_name(d.name):
+        if match and not match(normalize_name(d.name)):
             continue
         f = d / f"{law_type}.md"
         if f.is_file():
@@ -354,16 +366,22 @@ def _article_arg(label: str) -> str:
 
 
 def run(repo: Path, query: str, *, model: str, law_type: str,
-        law_filter: str | None, top_k: int, db: str, index_all: bool,
-        store: PgStore | None = None, embed_fn: EmbedFn | None = None,
-        tokenize_fn: TokenizeFn | None = None) -> int:
+        law_filter: str | Sequence[str] | None, top_k: int, db: str, index_all: bool,
+        preset: str | None = None, store: PgStore | None = None,
+        embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None) -> int:
     """하이브리드 검색 실행 — 동기화 후 RRF 융합 top-k를 출력한다.
 
     store/embed_fn/tokenize_fn 은 테스트 주입용.
     """
+    if preset:
+        # CLI에서 --law-filter와의 동시 지정은 이미 거부됨 (choices로 이름도 검증됨)
+        law_filter = PRESETS[preset]
+    scope = (f"--preset {preset}" if preset
+             else f"--law-filter {law_filter}" if law_filter else "전체")
+
     files = collect_law_files(repo, law_type, law_filter)
     if not files:
-        print(f"검색 대상 법령이 없습니다 (--law-filter {law_filter!r}, --type {law_type}).")
+        print(f"검색 대상 법령이 없습니다 ({scope}, --type {law_type}).")
         return 1
 
     store = store or PgStore(db)
@@ -373,6 +391,7 @@ def run(repo: Path, query: str, *, model: str, law_type: str,
             f"임베딩이 필요한 법령이 {unsynced}개입니다 (전체 아카이브).\n"
             "시간이 오래 걸릴 수 있어 중단했습니다. 다음 중 하나를 선택하세요:\n"
             "  --law-filter 키워드   # 법령명을 좁혀서 색인 (권장)\n"
+            f"  --preset 주제         # 주제별 법령 묶음 ({'·'.join(PRESETS)})\n"
             "  --index-all           # 전체 색인을 정말로 실행"
         )
         return 1
@@ -391,7 +410,6 @@ def run(repo: Path, query: str, *, model: str, law_type: str,
 
     print("=" * 60)
     print(f'하이브리드 검색: "{query}"')
-    scope = f"--law-filter {law_filter}" if law_filter else "전체"
     print(f"  모델: {model} + 형태소 tsvector / 대상: {len(files)}개 법령 ({scope}) / DB: {db}")
     print("=" * 60)
     if not hits:

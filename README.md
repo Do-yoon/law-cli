@@ -100,6 +100,9 @@ brew services start postgresql@17
 # 법령명을 좁혀서 검색 (권장 — 처음 한 번만 임베딩하고 이후엔 재사용)
 law-cli --semantic "이혼할 때 재산을 나누는 규정" --law-filter 민법
 
+# 주제별 프리셋으로 좁히기 (가족·노동·주거·교통)
+law-cli --semantic "월급을 못 받았어요" --preset 노동
+
 # 다른 Hugging Face 임베딩 모델 사용
 law-cli --semantic "질의문" --model intfloat/multilingual-e5-large --law-filter 민법
 
@@ -114,8 +117,14 @@ law-cli --semantic "질의문" --index-all
   아카이브를 `git pull`로 갱신하면 바뀐 법령만 다시 임베딩합니다.
 - 검색 결과에는 유사도·미리보기·출처 URL과 함께, 원문을 정확히 볼 수 있는
   결정적 조회 명령(`law-cli 법령명 조번호`)이 안내됩니다.
+- `--preset`은 주제별 법령 묶음(가족·노동·주거·교통)으로 범위를 좁힙니다.
+  키워드 부분일치(`--law-filter`)와 달리 엄선된 법령명과 정확히 일치할 때만
+  포함하므로, "민법" 키워드가 "난민법"까지 잡는 식의 오염이 없습니다.
+  (`--law-filter`와 동시에 쓸 수 없습니다.)
 - 데이터베이스명은 `--db` 옵션 또는 환경변수 `LAW_CLI_DB`로 바꿀 수 있습니다.
 - 벡터스토어는 아카이브의 파생물입니다 — 언제든 `DROP DATABASE` 후 재생성해도 됩니다.
+- 판례(判例) 코퍼스 확장은 보류 상태입니다 — 판례는 일차자료 아카이브(legalize-kr)의
+  범위 밖이라, 별도의 데이터 소스와 라이선스 검토가 선행되어야 합니다.
 
 ## 저장소 위치 지정
 

@@ -312,8 +312,9 @@ STRINGS = {
             (0, "1) [완료] CLI 연결: --semantic 옵션군을 argparse에 연결 + 단위 테스트", False),
             (0, "2) [완료] 통합 테스트: 로컬 PostgreSQL 스모크 테스트 (없으면 자동 스킵)", False),
             (0, "3) [완료] README 갱신: 의미 검색 사용법·DB 준비 절차", False),
-            (0, "4) 설계 문서 영어판 생성 → GitHub 커밋 (한국어판은 gitignore 유지)", False),
-            (0, "5) (검토) 법령 스코프 프리셋, 판례 코퍼스 확장 여부", False),
+            (0, "4) [완료] 설계 문서 영어판 생성 → GitHub 커밋 (한국어판은 gitignore 유지)", False),
+            (0, "5) [완료] 법령 스코프 프리셋(--preset 가족·노동·주거·교통) — 정규화 동일 일치", False),
+            (1, "판례 코퍼스 확장은 보류 — 일차자료 아카이브 범위 밖, 별도 데이터 소스·라이선스 검토 필요", False),
         ],
     },
     "en": {
@@ -410,8 +411,9 @@ STRINGS = {
             (0, "1) [done] CLI wiring: --semantic option group in argparse + unit tests", False),
             (0, "2) [done] Integration tests: PostgreSQL smoke tests (auto-skip when unavailable)", False),
             (0, "3) [done] README refresh: semantic-search usage and DB setup", False),
-            (0, "4) English edition of this design deck → committed to GitHub (Korean edition stays gitignored)", False),
-            (0, "5) (Under review) statute scope presets; whether to add a case-law corpus", False),
+            (0, "4) [done] English edition of this design deck → committed to GitHub (Korean edition stays gitignored)", False),
+            (0, "5) [done] Statute scope presets (--preset: family, labor, housing, traffic) — normalized exact match", False),
+            (1, "Case-law corpus expansion deferred — outside the primary-source archive; needs a separate data source and license review", False),
         ],
     },
 }
