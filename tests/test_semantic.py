@@ -197,6 +197,20 @@ def test_증분_동기화_같은_내용은_재임베딩_안함(repo):
     assert sum(len(c) for c in calls) == 2 + 1  # 다른법률 조문 2개 + 질의문
 
 
+def test_sync_진행_콜백(repo):
+    store = FakeStore()
+    calls = []
+    _run(repo, "질의", store, progress_fn=lambda i, t, m: calls.append((i, t, m)))
+    # 법령 2개 색인 — (1,2,…), (2,2,…) 순서로 법령명이 담긴다
+    assert [(i, t) for i, t, _ in calls] == [(1, 2), (2, 2)]
+    assert any("테스트법률" in m for _, _, m in calls)
+
+    # 파일이 그대로면 재실행 시 진행 콜백이 불리지 않는다
+    calls.clear()
+    _run(repo, "질의", store, progress_fn=lambda i, t, m: calls.append((i, t, m)))
+    assert calls == []
+
+
 def test_전체색인_가드(repo, capsys, monkeypatch):
     # 필터·--index-all 없이 임계값을 넘으면 색인하지 않고 중단한다
     monkeypatch.setattr(semantic, "_INDEX_ALL_THRESHOLD", 1)

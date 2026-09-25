@@ -156,18 +156,41 @@ uv tool install "law-cli[mcp,semantic]"
 claude mcp add law-kr -- law-cli-mcp
 ```
 
-For Claude Desktop, add to the config file:
+### Using a GUI — Claude Desktop
 
-```json
-{
-  "mcpServers": {
-    "law-kr": {
-      "command": "law-cli-mcp",
-      "env": { "LEGALIZE_KR_REPO": "/path/to/legalize-kr" }
-    }
-  }
-}
-```
+If you'd rather not use a terminal, register the server in
+[Claude Desktop](https://claude.ai/download) — the chat window becomes the GUI.
+Ask in everyday language and Claude finds the articles and cites them with sources.
+
+1. **Install** (one-time terminal step):
+   ```bash
+   git clone https://github.com/legalize-kr/legalize-kr.git ~/legalize-kr
+   uv tool install "law-cli[mcp,semantic]"
+   ```
+2. **Register**: Claude Desktop → Settings → Developer → **Edit Config**, which opens
+   `claude_desktop_config.json`:
+   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "law-kr": {
+         "command": "law-cli-mcp",
+         "env": { "LEGALIZE_KR_REPO": "/Users/me/legalize-kr" }
+       }
+     }
+   }
+   ```
+3. **Restart and verify**: the `law-kr` server should appear under the tools icon
+   in the chat input.
+4. **Use it** — just ask:
+   > "My landlord won't return my jeonse deposit. Which laws apply?"
+   > "What did Article 18 of the Stalking Punishment Act say as of June 2023?"
+
+The lookup tools (article text, TOC, law-name search) work without PostgreSQL —
+only `semantic_search` needs the PostgreSQL + pgvector setup above; without it,
+Claude falls back to keyword search.
 
 Point `LEGALIZE_KR_REPO` at the archive (falls back to conventional paths).
 
@@ -180,7 +203,9 @@ Point `LEGALIZE_KR_REPO` at the archive (falls back to conventional paths).
 | `search_laws` | Find law names by keyword |
 | `semantic_search` | Natural-language hybrid search (scoped by preset/law_filter) |
 
-`semantic_search` requires PostgreSQL + pgvector (see "Setup" above). Every result
+`semantic_search` requires PostgreSQL + pgvector (see "Setup" above). While the
+first search embeds the scoped laws (which can take minutes), progress notifications
+like `임베딩 [3/6] …` are streamed to the client. Every result
 carries the source URL and a reference-only disclaimer, and the server instructions
 tell the LLM to always present the source alongside any citation.
 
