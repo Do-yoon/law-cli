@@ -34,6 +34,8 @@ _INDEX_ALL_THRESHOLD = 200
 EmbedFn = Callable[[Sequence[str]], Sequence[Sequence[float]]]
 # 토큰화 함수: 문자열 목록 → 공백으로 이어붙인 형태소 토큰 문자열 목록
 TokenizeFn = Callable[[Sequence[str]], list[str]]
+# 진행 콜백: (현재, 전체, 메시지) — MCP progress 알림 등 stderr 밖 전달용
+ProgressFn = Callable[[int, int, str], None]
 
 # RRF 융합 상수 (관례값 60 — 상위권 순위 차이를 완만하게 반영)
 _RRF_K = 60
@@ -326,7 +328,7 @@ def rrf_fuse(vec_hits: Sequence[tuple[int, Chunk]], lex_hits: Sequence[tuple[int
 
 def sync(store: PgStore, repo: Path, model: str, law_type: str,
          files: list[tuple[str, Path]], embed_fn: EmbedFn,
-         tokenize_fn: TokenizeFn) -> int:
+         tokenize_fn: TokenizeFn, progress_fn: ProgressFn | None = None) -> int:
     """변경·미등록 파일만 임베딩·토큰화해 저장한다. 처리한 파일 수를 반환."""
     synced = store.synced_hashes(model)
     done = 0
@@ -339,6 +341,8 @@ def sync(store: PgStore, repo: Path, model: str, law_type: str,
         stale.append((law_name, file_hash, chunks))
     for i, (law_name, file_hash, chunks) in enumerate(stale, 1):
         print(f"임베딩 [{i}/{len(stale)}] {law_name} ({len(chunks)}개 조문)", file=sys.stderr)
+        if progress_fn:
+            progress_fn(i, len(stale), f"{law_name} ({len(chunks)}개 조문)")
         texts = [c.text for c in chunks]
         vectors = embed_fn(texts) if chunks else []
         tokens = tokenize_fn(texts) if chunks else []
@@ -373,6 +377,7 @@ def search(repo: Path, query: str, *, model: str, law_type: str,
            law_filter: str | Sequence[str] | None, top_k: int, db: str, index_all: bool,
            preset: str | None = None, store: PgStore | None = None,
            embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None,
+           progress_fn: ProgressFn | None = None,
            ) -> tuple[str, int, list[tuple[Chunk, int | None, int | None]]]:
     """하이브리드 검색 — 동기화 후 RRF 융합 결과를 구조화해 반환한다.
 
@@ -403,7 +408,7 @@ def search(repo: Path, query: str, *, model: str, law_type: str,
 
     tokenize_fn = tokenize_fn or load_tokenizer()
     embed_fn = embed_fn or load_embedder(model)
-    sync(store, repo, model, law_type, files, embed_fn, tokenize_fn)
+    sync(store, repo, model, law_type, files, embed_fn, tokenize_fn, progress_fn)
 
     names = [n for n, _ in files]
     pool = max(top_k * 10, _POOL_MIN)
@@ -417,13 +422,15 @@ def search(repo: Path, query: str, *, model: str, law_type: str,
 def run(repo: Path, query: str, *, model: str, law_type: str,
         law_filter: str | Sequence[str] | None, top_k: int, db: str, index_all: bool,
         preset: str | None = None, store: PgStore | None = None,
-        embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None) -> int:
+        embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None,
+        progress_fn: ProgressFn | None = None) -> int:
     """하이브리드 검색 CLI 실행 — search() 결과를 터미널에 출력한다."""
     try:
         scope, n_files, hits = search(
             repo, query, model=model, law_type=law_type, law_filter=law_filter,
             top_k=top_k, db=db, index_all=index_all, preset=preset,
-            store=store, embed_fn=embed_fn, tokenize_fn=tokenize_fn)
+            store=store, embed_fn=embed_fn, tokenize_fn=tokenize_fn,
+            progress_fn=progress_fn)
     except SearchScopeError as e:
         print(e)
         return 1

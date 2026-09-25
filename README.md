@@ -193,6 +193,8 @@ PostgreSQL이 없어도 조회 도구(조문·목차·법령명 검색)는 동�
 | `semantic_search` | 자연어 하이브리드 검색 (preset/law_filter로 범위 지정) |
 
 `semantic_search`에는 PostgreSQL + pgvector가 필요합니다 (위 "준비" 참고).
+첫 검색 시 해당 범위의 법령을 임베딩하는 동안(수 분 소요 가능) 진행 상황이
+`임베딩 [3/6] …` 형태의 progress 알림으로 클라이언트에 표시됩니다.
 모든 결과에는 출처 URL과 참고용 고지가 포함되며, 서버 instructions가 LLM에게
 "인용 시 반드시 출처를 함께 제시할 것"을 지시합니다.
 

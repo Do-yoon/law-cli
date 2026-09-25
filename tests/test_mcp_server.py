@@ -69,6 +69,29 @@ def test_semantic_search_구조화_결과(mcp_repo, monkeypatch):
     assert "참고용" in r["disclaimer"]
 
 
+def test_semantic_search_ctx_진행알림_전달(mcp_repo, monkeypatch):
+    # ctx가 있으면 progress_fn이 전달되고, 없으면 None이어야 한다
+    captured = {}
+
+    def fake_search(repo, query, **kw):
+        captured.update(kw)
+        return "전체", 0, []
+
+    monkeypatch.setattr(semantic, "search", fake_search)
+
+    class StubCtx:
+        async def report_progress(self, *a): ...
+        async def info(self, *a): ...
+
+    mcp_server.semantic_search("질의", law_filter="테스트", ctx=StubCtx())
+    assert callable(captured["progress_fn"])
+    # 루프 밖에서 호출돼도 예외 없이 무시된다 (_notify의 안전 가드)
+    captured["progress_fn"](1, 2, "테스트법률")
+
+    mcp_server.semantic_search("질의", law_filter="테스트")
+    assert captured["progress_fn"] is None
+
+
 def test_semantic_search_preset_filter_동시지정_거부(mcp_repo):
     with pytest.raises(mcp_server.ToolError, match="함께 쓸 수 없습니다"):
         mcp_server.semantic_search("질의", preset="가족", law_filter="민법")

@@ -203,7 +203,9 @@ Point `LEGALIZE_KR_REPO` at the archive (falls back to conventional paths).
 | `search_laws` | Find law names by keyword |
 | `semantic_search` | Natural-language hybrid search (scoped by preset/law_filter) |
 
-`semantic_search` requires PostgreSQL + pgvector (see "Setup" above). Every result
+`semantic_search` requires PostgreSQL + pgvector (see "Setup" above). While the
+first search embeds the scoped laws (which can take minutes), progress notifications
+like `임베딩 [3/6] …` are streamed to the client. Every result
 carries the source URL and a reference-only disclaimer, and the server instructions
 tell the LLM to always present the source alongside any citation.
 

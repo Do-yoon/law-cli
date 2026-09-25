@@ -43,10 +43,33 @@ except ImportError:
     except ImportError:
         ToolError = RuntimeError  # mcp 미설치 환경 (도구 함수 단위 테스트용)
 
+# Context 타입 주석이 있으면 FastMCP가 요청 컨텍스트를 주입한다 (progress 알림용)
+try:
+    from mcp.server.mcpserver import Context  # mcp 2.x
+except ImportError:
+    try:
+        from mcp.server.fastmcp import Context  # mcp 1.x
+    except ImportError:
+        Context = None  # mcp 미설치 환경
+
 
 def _fail(message: str):
     """도구 실패를 MCP 오류로 변환한다 — 메시지가 클라이언트(LLM)에 전달된다."""
     raise ToolError(message)
+
+
+def _notify(ctx, coro_fn, *args):
+    """워커 스레드에서 이벤트 루프의 async 알림 메서드를 호출한다.
+
+    FastMCP는 sync 도구를 anyio 워커 스레드에서 돌리므로 from_thread로
+    되돌아간다. 알림 실패(세션 없음·루프 밖 등)가 검색을 막으면 안 된다.
+    """
+    try:
+        import anyio  # mcp 의존성 — mcp 미설치 환경에서는 알림만 건너뛴다
+
+        anyio.from_thread.run(coro_fn, *args)
+    except Exception:
+        pass
 
 
 def _law_file(law_name: str, law_type: str):
@@ -137,7 +160,8 @@ def search_laws(keyword: str) -> dict:
 
 def semantic_search(query: str, preset: str | None = None,
                     law_filter: str | None = None, top_k: int = 5,
-                    law_type: str = "법률", model: str = DEFAULT_MODEL) -> dict:
+                    law_type: str = "법률", model: str = DEFAULT_MODEL,
+                    ctx: Context = None) -> dict:
     """자연어 질의로 조문을 하이브리드 검색한다 (임베딩 + 형태소 어휘, RRF 융합).
 
     일상어 질의를 그대로 넣어도 된다 — 임베딩이 일상어와 조문 언어의 간극을
@@ -147,6 +171,7 @@ def semantic_search(query: str, preset: str | None = None,
     law_filter: 법령명 부분일치 키워드 (preset과 동시 지정 불가).
     범위를 지정하지 않으면 아카이브 전체(3천여 법령)라 색인 시간 문제로
     거부될 수 있다 — preset이나 law_filter로 좁히는 것을 권장.
+    첫 색인은 수 분 걸릴 수 있으며 진행 상황이 progress 알림으로 전송된다.
 
     요구 사항: PostgreSQL + pgvector, law-cli[semantic] 설치.
     """
@@ -156,11 +181,21 @@ def semantic_search(query: str, preset: str | None = None,
         _fail("preset과 law_filter는 함께 쓸 수 없습니다. 하나만 지정하세요.")
     if preset and preset not in PRESETS:
         _fail(f"알 수 없는 preset: {preset!r} (사용 가능: {', '.join(PRESETS)})")
+
+    progress_fn = None
+    if ctx is not None:
+        def progress_fn(i, total, msg):
+            _notify(ctx, ctx.report_progress, float(i), float(total),
+                    f"임베딩 [{i}/{total}] {msg}")
+
     try:
         repo = find_repo(None)
+        if ctx is not None:
+            _notify(ctx, ctx.info, f'하이브리드 검색 준비: "{query}" — 대상 동기화 확인 중')
         scope, n_files, hits = semantic.search(
             repo, query, model=model, law_type=law_type, law_filter=law_filter,
-            top_k=top_k, db=DEFAULT_DB, index_all=False, preset=preset)
+            top_k=top_k, db=DEFAULT_DB, index_all=False, preset=preset,
+            progress_fn=progress_fn)
     except semantic.SearchScopeError as e:
         _fail(str(e))
     except SystemExit as e:  # PgStore·임베더 로드 실패는 sys.exit로 나온다
