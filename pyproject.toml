@@ -34,9 +34,12 @@ semantic = [
     "psycopg[binary]>=3.1",
     "kiwipiepy>=0.18",  # 한국어 형태소 분석 — tsvector 어휘 색인용
 ]
+# MCP 서버(law-cli-mcp) 전용 — LLM에서 조회·검색 도구로 사용
+mcp = ["mcp>=1.2"]
 
 [project.scripts]
 law-cli = "law_cli:main"
+law-cli-mcp = "law_cli.mcp_server:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

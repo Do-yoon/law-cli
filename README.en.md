@@ -138,6 +138,52 @@ law-cli --semantic "query" --index-all
   the primary-source archive (legalize-kr); a separate data source and license review
   would have to come first.
 
+## MCP Server — LLM Integration
+
+Interpreting everyday language into statutory language is what LLMs do best.
+law-cli covers the other side — it ships an MCP (Model Context Protocol) server,
+`law-cli-mcp`, that gives the LLM **exact article texts with primary-source URLs**.
+The LLM interprets the user's phrasing and calls the search/lookup tools, so every
+citation is grounded in the original text and its source.
+
+### Install & register
+
+```bash
+# MCP server + semantic search (use "law-cli[mcp]" for lookup tools only)
+uv tool install "law-cli[mcp,semantic]"
+
+# Register with Claude Code
+claude mcp add law-kr -- law-cli-mcp
+```
+
+For Claude Desktop, add to the config file:
+
+```json
+{
+  "mcpServers": {
+    "law-kr": {
+      "command": "law-cli-mcp",
+      "env": { "LEGALIZE_KR_REPO": "/path/to/legalize-kr" }
+    }
+  }
+}
+```
+
+Point `LEGALIZE_KR_REPO` at the archive (falls back to conventional paths).
+
+### Tools
+
+| Tool | Role |
+|------|------|
+| `lookup_article` | Full article text by law name + article number (supports `as_of`) |
+| `list_law_articles` | Table of articles for a law |
+| `search_laws` | Find law names by keyword |
+| `semantic_search` | Natural-language hybrid search (scoped by preset/law_filter) |
+
+`semantic_search` requires PostgreSQL + pgvector (see "Setup" above). Every result
+carries the source URL and a reference-only disclaimer, and the server instructions
+tell the LLM to always present the source alongside any citation.
+
 ## Locating the Archive
 
 The `legalize-kr` archive is auto-detected in this order:
