@@ -1,0 +1,39 @@
+name: 버그 신고
+description: 동작이 기대와 다를 때
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        법령 데이터 자체의 오류(조문 누락·오탈자)는 [legalize-kr](https://github.com/legalize-kr/legalize-kr/issues) 쪽에 신고해 주세요.
+  - type: input
+    id: command
+    attributes:
+      label: 실행한 명령
+      placeholder: 'law-cli 민법 839의2 --as-of 2023-06-30'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 기대한 동작
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 실제 동작
+      description: 출력·오류 메시지를 그대로 붙여주세요.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: 환경
+      description: OS, Python 버전, 설치 방법(pip/uv), --semantic 관련이면 PostgreSQL·모델 정보
+      placeholder: |
+        macOS 15 / Python 3.12 / uv tool install
+        PostgreSQL 17 + pgvector, BAAI/bge-m3
+    validations:
+      required: false

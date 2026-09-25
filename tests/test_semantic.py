@@ -1,0 +1,213 @@
+# 하이브리드 검색 로직 테스트 — PostgreSQL·모델 다운로드 없이 가짜 스토어/임베더/토크나이저로 검증
+import pytest
+from conftest import FIXTURE, FIXTURE2, fake_embed, fake_tokenize
+
+import law_cli
+from law_cli import semantic
+from law_cli.semantic import Chunk, chunk_file, collect_law_files, rrf_fuse, split_articles
+
+
+class FakeStore:
+    """PgStore와 같은 인터페이스의 인메모리 스토어 (행 id 부여 포함)."""
+
+    def __init__(self):
+        self.rows = {}  # (model, law_name, law_type) → (file_hash, [(id, Chunk, vec, tokens)])
+        self._next_id = 1
+
+    def synced_hashes(self, model):
+        return {(n, t): h for (m, n, t), (h, _) in self.rows.items() if m == model}
+
+    def replace_law(self, model, law_name, law_type, file_hash, chunks, vectors, tokens):
+        entries = []
+        for chunk, vec, tok in zip(chunks, vectors, tokens):
+            entries.append((self._next_id, chunk, vec, tok))
+            self._next_id += 1
+        self.rows[(model, law_name, law_type)] = (file_hash, entries)
+
+    def _candidates(self, model, law_names):
+        for (m, n, t), (_, entries) in self.rows.items():
+            if m != model or (law_names is not None and n not in law_names):
+                continue
+            yield from entries
+
+    def search(self, model, query_vec, law_names, limit):
+        hits = [
+            (sum(a * b for a, b in zip(query_vec, vec)), rid, chunk)
+            for rid, chunk, vec, _ in self._candidates(model, law_names)
+        ]
+        hits.sort(key=lambda x: -x[0])
+        return [(rid, chunk) for _, rid, chunk in hits[:limit]]
+
+    def lexical_search(self, model, query_tokens, law_names, limit):
+        want = set(query_tokens)
+        hits = []
+        for rid, chunk, _, tok in self._candidates(model, law_names):
+            overlap = len(want & set(tok.split()))
+            if overlap:
+                hits.append((overlap, rid, chunk))
+        hits.sort(key=lambda x: -x[0])
+        return [(rid, chunk) for _, rid, chunk in hits[:limit]]
+
+
+def _run(repo, query, store, **overrides):
+    kwargs = dict(model="fake", law_type="법률", law_filter=None,
+                  top_k=3, db="unused", index_all=True,
+                  store=store, embed_fn=fake_embed, tokenize_fn=fake_tokenize)
+    kwargs.update(overrides)
+    return semantic.run(repo, query, **kwargs)
+
+
+def test_split_articles_조문_단위():
+    _, body = semantic.parse_frontmatter(FIXTURE)
+    arts = split_articles(body)
+    assert [(a[0], a[1]) for a in arts] == [
+        ("제1조", "목적"), ("제2조", "정의"), ("제3조", "벌칙"),
+    ]
+    # 장(章) 헤딩은 조문 텍스트에 포함되지 않는다
+    assert all("제2장" not in a[2] for a in arts)
+
+
+def test_chunk_file_메타데이터():
+    file_hash, chunks = chunk_file("테스트법률", "법률", FIXTURE)
+    assert len(file_hash) == 40  # sha1 hex
+    assert all(c.law_title == "테스트 법률" for c in chunks)
+    assert all(c.source_url.endswith("테스트법률") for c in chunks)
+    # 임베딩 원문에는 문맥 보강용으로 법령명이 앞에 붙는다
+    assert chunks[0].text.startswith("테스트 법률 제1조")
+
+
+def test_chunk_file_해시는_내용_기준():
+    h1, _ = chunk_file("a", "법률", FIXTURE)
+    h2, _ = chunk_file("a", "법률", FIXTURE + "\n변경")
+    assert h1 != h2
+
+
+def test_collect_law_files_필터(repo):
+    assert [n for n, _ in collect_law_files(repo, "법률", None)] == ["다른법률", "테스트법률"]
+    # 부분일치 + 공백 정규화
+    assert [n for n, _ in collect_law_files(repo, "법률", "테스트 법률")] == ["테스트법률"]
+    assert collect_law_files(repo, "시행령", None) == []
+
+
+def test_collect_law_files_목록은_동일_일치(repo):
+    # 프리셋용 목록 필터는 부분일치가 아니라 정규화 동일 일치
+    assert [n for n, _ in collect_law_files(repo, "법률", ["테스트 법률"])] == ["테스트법률"]
+    assert collect_law_files(repo, "법률", ["법률"]) == []  # "법률"은 부분 문자열일 뿐
+
+
+def test_run_preset_적용(repo, capsys, monkeypatch):
+    monkeypatch.setitem(semantic.PRESETS, "테스트주제", ["테스트법률"])
+    rc = _run(repo, "아무 질의", FakeStore(), preset="테스트주제", index_all=False)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "--preset 테스트주제" in out
+    assert "테스트 법률" in out and "다른 법률" not in out
+
+
+def test_cli_preset_law_filter_동시지정_거부(capsys):
+    with pytest.raises(SystemExit) as e:
+        law_cli.main(["--semantic", "질의", "--preset", "가족", "--law-filter", "민법"])
+    assert e.value.code == 2
+    assert "함께 쓸 수 없습니다" in capsys.readouterr().err
+
+
+def test_cli_preset은_semantic_전용(capsys):
+    with pytest.raises(SystemExit) as e:
+        law_cli.main(["민법", "1", "--preset", "가족"])
+    assert e.value.code == 2
+    assert "--semantic과 함께" in capsys.readouterr().err
+
+
+def test_presets_구성():
+    # 프리셋은 비어 있지 않고, 정규화 시 서로 동일해지는 중복이 없어야 한다
+    for name, laws in law_cli.PRESETS.items():
+        assert laws, name
+        normalized = [semantic.normalize_name(x) for x in laws]
+        assert len(set(normalized)) == len(normalized), name
+
+
+def test_rrf_융합_양경로_가산():
+    a, b, c = (Chunk("l", "법률", "L", f"제{i}조", "", "본문", "") for i in (1, 2, 3))
+    # a: 의미 1위 + 어휘 2위 → 양 경로 합산으로 최상위
+    # c(어휘 1위, 1/61) > b(의미 2위, 1/62) — 단일 경로끼리는 순위가 높은 쪽이 위
+    fused = rrf_fuse([(1, a), (2, b)], [(3, c), (1, a)], top_k=3)
+    assert [f[0].label for f in fused] == ["제1조", "제3조", "제2조"]
+    assert fused[0][1] == 1 and fused[0][2] == 2  # (의미순위, 어휘순위)
+    assert fused[1][1] is None and fused[1][2] == 1
+
+
+def test_run_의미경로_상위결과(repo, capsys):
+    rc = _run(repo, "테스트를 목적으로 한다", FakeStore())
+    out = capsys.readouterr().out
+    assert rc == 0
+    # 질의와 겹치는 제1조(목적)가 1위여야 한다
+    first = out.split("[1]")[1].split("[2]")[0]
+    assert "제1조" in first and "테스트 법률" in first
+    assert "의미" in first and "어휘" in first  # 양 경로 순위 표기
+    # 출처와 재조회 명령 안내가 붙는다
+    assert "출처: https://www.law.go.kr/법령/테스트법률" in first
+    assert "law-cli 테스트법률 1" in first
+
+
+def test_run_어휘경로가_정확한_용어를_구제(repo, capsys):
+    # 임베딩이 빗나가도(가짜 임베더가 전부 같은 벡터를 줘도) 정확 단어 "거짓"은
+    # 어휘 경로가 잡아서 상위로 올라와야 한다.
+    # (가짜 토크나이저는 조사를 못 떼므로 조사가 안 붙은 단어를 쓴다 —
+    #  실제 경로에서는 Kiwi가 "과태료를" → "과태료" 처리를 담당)
+    store = FakeStore()
+
+    def bad_embed(texts):
+        return [[1.0] + [0.0] * 63 for _ in texts]  # 전부 동일 벡터 — 의미 경로 무력화
+
+    rc = _run(repo, "거짓", store, embed_fn=bad_embed)
+    out = capsys.readouterr().out
+    assert rc == 0
+    first = out.split("[1]")[1].split("[2]")[0]
+    assert "제3조" in first and "어휘 1위" in first
+
+
+def test_run_law_filter_적용(repo, capsys):
+    rc = _run(repo, "아무 질의", FakeStore(), law_filter="다른", top_k=5, index_all=False)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "다른 법률" in out and "테스트 법률" not in out
+
+
+def test_증분_동기화_같은_내용은_재임베딩_안함(repo):
+    store = FakeStore()
+    calls = []
+
+    def counting_embed(texts):
+        calls.append(list(texts))
+        return fake_embed(texts)
+
+    _run(repo, "질의", store, embed_fn=counting_embed)
+    assert sum(len(c) for c in calls) == 4 + 1  # 최초 색인: 조문 4개 + 질의문 1개
+    calls.clear()
+
+    # 두 번째 실행: 파일이 그대로면 질의문 1건만 임베딩한다
+    _run(repo, "질의", store, embed_fn=counting_embed)
+    assert [len(c) for c in calls] == [1]
+
+    # 파일 하나를 바꾸면 그 법령만 재임베딩된다
+    calls.clear()
+    f = repo / "kr" / "다른법률" / "법률.md"
+    f.write_text(FIXTURE2 + "\n##### 제2조 (추가)\n\n추가 조문.\n", encoding="utf-8")
+    _run(repo, "질의", store, embed_fn=counting_embed)
+    assert sum(len(c) for c in calls) == 2 + 1  # 다른법률 조문 2개 + 질의문
+
+
+def test_전체색인_가드(repo, capsys, monkeypatch):
+    # 필터·--index-all 없이 임계값을 넘으면 색인하지 않고 중단한다
+    monkeypatch.setattr(semantic, "_INDEX_ALL_THRESHOLD", 1)
+    store = FakeStore()
+    rc = _run(repo, "질의", store, index_all=False)
+    assert rc == 1
+    assert "--index-all" in capsys.readouterr().out
+    assert store.rows == {}  # 아무것도 색인되지 않았다
+
+
+def test_대상_없음(repo, capsys):
+    rc = _run(repo, "질의", FakeStore(), law_filter="존재하지않는법", index_all=False)
+    assert rc == 1
+    assert "검색 대상 법령이 없습니다" in capsys.readouterr().out

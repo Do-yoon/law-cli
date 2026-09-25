@@ -26,6 +26,34 @@ _ARTICLE_INPUT_RE = re.compile(r"^(?:제)?(\d+)(?:조)?(?:의(\d+))?$")
 
 _LAW_TYPES = ("법률", "시행령", "시행규칙")
 
+# --preset 법령 스코프 프리셋 — 일반인 상담 빈도가 높은 주제별 법령 묶음.
+# 부분일치가 아닌 정규화 동일 일치로 매칭한다 ("민법" 부분일치는 "난민법"까지 잡는다).
+# 구성 법령명은 legalize-kr 아카이브의 kr/ 디렉토리명 기준.
+PRESETS = {
+    "가족": ["민법", "가족관계의등록등에관한법률", "가사소송법"],
+    "노동": [
+        "근로기준법", "최저임금법", "근로자퇴직급여보장법",
+        "기간제및단시간근로자보호등에관한법률",
+        "남녀고용평등과일ㆍ가정양립지원에관한법률", "산업재해보상보험법",
+    ],
+    "주거": ["주택임대차보호법", "상가건물임대차보호법", "공동주택관리법"],
+    "교통": ["도로교통법", "교통사고처리특례법", "자동차손해배상보장법"],
+    "형사": [
+        "형법", "형사소송법", "경범죄처벌법",
+        "스토킹범죄의처벌등에관한법률", "성폭력범죄의처벌등에관한특례법",
+        "형의실효등에관한법률",
+    ],
+    "소비자": [
+        "소비자기본법", "전자상거래등에서의소비자보호에관한법률",
+        "약관의규제에관한법률", "할부거래에관한법률", "방문판매등에관한법률",
+    ],
+    "금전": [
+        "이자제한법", "대부업등의등록및금융이용자보호에관한법률",
+        "채권의공정한추심에관한법률",
+    ],
+    "개인정보": ["개인정보보호법", "정보통신망이용촉진및정보보호등에관한법률"],
+}
+
 # 저장소 자동 탐지 순서: 환경변수 → 현재 디렉토리 → 홈 디렉토리
 _DEFAULT_REPO_CANDIDATES = (
     Path("legalize-kr"),
@@ -221,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             "  law-cli 스토킹범죄의처벌등에관한법률 18 --as-of 2023-06-30\n"
             "  law-cli 민법 --toc                   # 조문 목차\n"
             "  law-cli --search 스토킹              # 법령명 검색\n"
+            '  law-cli --semantic "재산 분할" --law-filter 민법   # 자연어 의미 검색\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -233,9 +262,46 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--toc", action="store_true", help="조문 목차를 출력")
     parser.add_argument("--search", metavar="키워드", help="키워드로 법령명을 검색")
     parser.add_argument("--repo", help="legalize-kr 저장소 경로")
+
+    semantic_group = parser.add_argument_group(
+        "의미 검색 (Hugging Face 임베딩 모델 + PostgreSQL/pgvector)"
+    )
+    semantic_group.add_argument("--semantic", metavar="질의문",
+                                help='자연어로 조문을 의미 검색 (예: --semantic "재산 분할 청구")')
+    semantic_group.add_argument("--model", default=None, metavar="HF모델",
+                                help="Hugging Face 임베딩 모델명 (기본: BAAI/bge-m3)")
+    semantic_group.add_argument("--top-k", type=int, default=5, metavar="N",
+                                help="결과 개수 (기본: 5)")
+    semantic_group.add_argument("--law-filter", metavar="키워드",
+                                help="법령명 부분일치로 검색·색인 범위를 좁힘 (권장)")
+    semantic_group.add_argument("--preset", choices=list(PRESETS),
+                                help="주제별 법령 묶음으로 범위를 좁힘 (예: --preset 가족)")
+    semantic_group.add_argument("--db", default=None, metavar="DB명",
+                                help="PostgreSQL 데이터베이스명 (기본: $LAW_CLI_DB 또는 law_cli)")
+    semantic_group.add_argument("--index-all", action="store_true",
+                                help="--law-filter 없이 아카이브 전체 색인을 허용")
     args = parser.parse_args(argv)
 
+    if args.preset and args.law_filter:
+        parser.error("--preset과 --law-filter는 함께 쓸 수 없습니다. 하나만 지정하세요.")
+    if args.preset and not args.semantic:
+        parser.error("--preset은 --semantic과 함께 사용합니다.")
+
     repo = find_repo(args.repo)
+
+    if args.semantic:
+        from . import semantic  # 무거운 의존성은 --semantic 사용 시에만 로드
+
+        return semantic.run(
+            repo, args.semantic,
+            model=args.model or semantic.DEFAULT_MODEL,
+            law_type=args.type,
+            law_filter=args.law_filter,
+            top_k=args.top_k,
+            db=args.db or semantic.DEFAULT_DB,
+            index_all=args.index_all,
+            preset=args.preset,
+        )
 
     if args.search:
         hits = suggest_laws(repo, args.search)

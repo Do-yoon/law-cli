@@ -1,0 +1,42 @@
+# 테스트 CI — pgvector 서비스 컨테이너로 PostgreSQL 통합 테스트까지 실행
+#
+# semantic extra 전체(torch 포함 ~2GB)는 설치하지 않는다 — 통합 테스트는
+# 가짜 임베더/토크나이저를 주입하므로 psycopg만 얹으면 전부 실행된다.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 의존성 설치 (dev 그룹)
+        run: uv sync
+      - name: 테스트 (통합 테스트 포함)
+        run: uv run --with "psycopg[binary]" pytest -q

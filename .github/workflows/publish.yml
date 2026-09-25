@@ -1,0 +1,21 @@
+# PyPI 배포 — Trusted Publishing (API 토큰 불필요)
+# 사전 준비 절차는 docs/RELEASING.md 참고
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # Trusted Publishing용 OIDC 토큰
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: 빌드 (sdist + wheel)
+        run: uv build
+      - name: PyPI 업로드
+        uses: pypa/gh-action-pypi-publish@release/v1

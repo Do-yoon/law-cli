@@ -1,11 +1,39 @@
 [project]
 name = "law-cli"
-version = "0.1.0"
-description = "대한민국 법령 조문 조회 CLI — legalize-kr 아카이브에서 원하는 법 조항을 시점 지정으로 조회합니다"
+version = "0.2.0"
+description = "대한민국 법령 조문 조회 CLI — legalize-kr 아카이브에서 원하는 법 조항을 시점 지정으로 조회하고, 임베딩 모델로 의미 검색합니다"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "Do-yoon Kim", email = "1.kim.doyoon@gmail.com" }]
+keywords = ["korean", "law", "statute", "legal", "cli", "semantic-search", "pgvector"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Legal Industry",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: Korean",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Do-yoon/law-cli"
+Issues = "https://github.com/Do-yoon/law-cli/issues"
+
+[project.optional-dependencies]
+# 의미 검색(--semantic) 전용 — 코어 조회 기능은 의존성 0을 유지한다
+semantic = [
+    "sentence-transformers>=3.0",
+    "psycopg[binary]>=3.1",
+    "kiwipiepy>=0.18",  # 한국어 형태소 분석 — tsvector 어휘 색인용
+]
 
 [project.scripts]
 law-cli = "law_cli:main"
