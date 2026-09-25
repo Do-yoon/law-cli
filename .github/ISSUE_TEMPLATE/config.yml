@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 법령 데이터 오류 (조문 누락·오탈자 등)
+    url: https://github.com/legalize-kr/legalize-kr/issues
+    about: 법령 원문 데이터의 문제는 legalize-kr 아카이브 저장소에 신고해 주세요.
