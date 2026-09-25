@@ -146,18 +146,40 @@ uv tool install "law-cli[mcp,semantic]"
 claude mcp add law-kr -- law-cli-mcp
 ```
 
-Claude Desktop은 설정 파일에 다음을 추가합니다:
+### GUI로 사용하기 — Claude Desktop
 
-```json
-{
-  "mcpServers": {
-    "law-kr": {
-      "command": "law-cli-mcp",
-      "env": { "LEGALIZE_KR_REPO": "/path/to/legalize-kr" }
-    }
-  }
-}
-```
+터미널 없이 쓰고 싶다면 [Claude Desktop](https://claude.ai/download)에 등록하세요.
+채팅 화면이 곧 GUI가 됩니다 — 일상어로 질문하면 Claude가 알아서 조문을 찾아
+출처와 함께 보여줍니다.
+
+1. **설치** (최초 1회만 터미널 사용):
+   ```bash
+   git clone https://github.com/legalize-kr/legalize-kr.git ~/legalize-kr
+   uv tool install "law-cli[mcp,semantic]"
+   ```
+2. **등록**: Claude Desktop → 설정 → 개발자 → **설정 편집**으로 열리는
+   `claude_desktop_config.json`에 추가:
+   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "law-kr": {
+         "command": "law-cli-mcp",
+         "env": { "LEGALIZE_KR_REPO": "/Users/나/legalize-kr" }
+       }
+     }
+   }
+   ```
+3. **재시작 후 확인**: 채팅 입력창의 도구 아이콘에 `law-kr`이 보이면 성공입니다.
+4. **사용**: 그냥 물어보세요 —
+   > "전세 보증금을 못 돌려받고 있어. 관련 법 조항 찾아줘"
+   > "2023년 6월 당시 스토킹처벌법 18조 내용이 뭐였어?"
+
+PostgreSQL이 없어도 조회 도구(조문·목차·법령명 검색)는 동작합니다 —
+자연어 검색(`semantic_search`)만 위 "준비"의 PostgreSQL + pgvector가 필요하며,
+없으면 Claude가 키워드 검색으로 대신 찾아줍니다.
 
 아카이브 위치는 환경변수 `LEGALIZE_KR_REPO`로 지정합니다 (미지정 시 관례 경로 탐지).
 
