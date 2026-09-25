@@ -365,12 +365,19 @@ def _article_arg(label: str) -> str:
     return label.removeprefix("제").replace("조", "", 1)
 
 
-def run(repo: Path, query: str, *, model: str, law_type: str,
-        law_filter: str | Sequence[str] | None, top_k: int, db: str, index_all: bool,
-        preset: str | None = None, store: PgStore | None = None,
-        embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None) -> int:
-    """하이브리드 검색 실행 — 동기화 후 RRF 융합 top-k를 출력한다.
+class SearchScopeError(Exception):
+    """검색을 진행할 수 없는 상태 — 메시지를 사용자에게 그대로 보여준다."""
 
+
+def search(repo: Path, query: str, *, model: str, law_type: str,
+           law_filter: str | Sequence[str] | None, top_k: int, db: str, index_all: bool,
+           preset: str | None = None, store: PgStore | None = None,
+           embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None,
+           ) -> tuple[str, int, list[tuple[Chunk, int | None, int | None]]]:
+    """하이브리드 검색 — 동기화 후 RRF 융합 결과를 구조화해 반환한다.
+
+    반환: (범위 표시 문자열, 대상 법령 수, [(청크, 의미순위, 어휘순위)]).
+    진행 불가 상태(대상 없음·전체 색인 가드)는 SearchScopeError로 알린다.
     store/embed_fn/tokenize_fn 은 테스트 주입용.
     """
     if preset:
@@ -381,20 +388,18 @@ def run(repo: Path, query: str, *, model: str, law_type: str,
 
     files = collect_law_files(repo, law_type, law_filter)
     if not files:
-        print(f"검색 대상 법령이 없습니다 ({scope}, --type {law_type}).")
-        return 1
+        raise SearchScopeError(f"검색 대상 법령이 없습니다 ({scope}, --type {law_type}).")
 
     store = store or PgStore(db)
     unsynced = count_unsynced(store, model, law_type, files)
     if unsynced > _INDEX_ALL_THRESHOLD and not law_filter and not index_all:
-        print(
+        raise SearchScopeError(
             f"임베딩이 필요한 법령이 {unsynced}개입니다 (전체 아카이브).\n"
             "시간이 오래 걸릴 수 있어 중단했습니다. 다음 중 하나를 선택하세요:\n"
             "  --law-filter 키워드   # 법령명을 좁혀서 색인 (권장)\n"
             f"  --preset 주제         # 주제별 법령 묶음 ({'·'.join(PRESETS)})\n"
             "  --index-all           # 전체 색인을 정말로 실행"
         )
-        return 1
 
     tokenize_fn = tokenize_fn or load_tokenizer()
     embed_fn = embed_fn or load_embedder(model)
@@ -406,11 +411,26 @@ def run(repo: Path, query: str, *, model: str, law_type: str,
     query_tokens = tokenize_fn([query])[0].split()
     vec_hits = store.search(model, query_vec, names, pool)
     lex_hits = store.lexical_search(model, query_tokens, names, pool)
-    hits = rrf_fuse(vec_hits, lex_hits, top_k)
+    return scope, len(files), rrf_fuse(vec_hits, lex_hits, top_k)
+
+
+def run(repo: Path, query: str, *, model: str, law_type: str,
+        law_filter: str | Sequence[str] | None, top_k: int, db: str, index_all: bool,
+        preset: str | None = None, store: PgStore | None = None,
+        embed_fn: EmbedFn | None = None, tokenize_fn: TokenizeFn | None = None) -> int:
+    """하이브리드 검색 CLI 실행 — search() 결과를 터미널에 출력한다."""
+    try:
+        scope, n_files, hits = search(
+            repo, query, model=model, law_type=law_type, law_filter=law_filter,
+            top_k=top_k, db=db, index_all=index_all, preset=preset,
+            store=store, embed_fn=embed_fn, tokenize_fn=tokenize_fn)
+    except SearchScopeError as e:
+        print(e)
+        return 1
 
     print("=" * 60)
     print(f'하이브리드 검색: "{query}"')
-    print(f"  모델: {model} + 형태소 tsvector / 대상: {len(files)}개 법령 ({scope}) / DB: {db}")
+    print(f"  모델: {model} + 형태소 tsvector / 대상: {n_files}개 법령 ({scope}) / DB: {db}")
     print("=" * 60)
     if not hits:
         print("결과가 없습니다.")

@@ -39,4 +39,4 @@ jobs:
       - name: 의존성 설치 (dev 그룹)
         run: uv sync
       - name: 테스트 (통합 테스트 포함)
-        run: uv run --with "psycopg[binary]" pytest -q
+        run: uv run --with "psycopg[binary]" --with "mcp>=1.2" pytest -q

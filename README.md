@@ -129,6 +129,51 @@ law-cli --semantic "질의문" --index-all
 - 판례(判例) 코퍼스 확장은 보류 상태입니다 — 판례는 일차자료 아카이브(legalize-kr)의
   범위 밖이라, 별도의 데이터 소스와 라이선스 검토가 선행되어야 합니다.
 
+## MCP 서버 — LLM 연동
+
+일반인의 일상어를 법조문 언어로 해석하는 일은 LLM이 가장 잘합니다. law-cli는
+그 반대편을 맡습니다 — LLM에게 **정확한 조문 전문과 일차자료 출처 URL**을 제공하는
+MCP(Model Context Protocol) 서버 `law-cli-mcp`를 내장하고 있습니다. LLM이 사용자의
+표현을 해석해 검색·조회 도구를 호출하고, 인용은 항상 원문과 출처에 근거하게 됩니다.
+
+### 설치·등록
+
+```bash
+# MCP 서버 + 의미 검색 (semantic 없이 조회 도구만 쓰려면 "law-cli[mcp]")
+uv tool install "law-cli[mcp,semantic]"
+
+# Claude Code에 등록
+claude mcp add law-kr -- law-cli-mcp
+```
+
+Claude Desktop은 설정 파일에 다음을 추가합니다:
+
+```json
+{
+  "mcpServers": {
+    "law-kr": {
+      "command": "law-cli-mcp",
+      "env": { "LEGALIZE_KR_REPO": "/path/to/legalize-kr" }
+    }
+  }
+}
+```
+
+아카이브 위치는 환경변수 `LEGALIZE_KR_REPO`로 지정합니다 (미지정 시 관례 경로 탐지).
+
+### 제공 도구
+
+| 도구 | 역할 |
+|------|------|
+| `lookup_article` | 법령명 + 조번호로 조문 전문 조회 (`as_of` 시점 지정 지원) |
+| `list_law_articles` | 법령의 조문 목차 |
+| `search_laws` | 키워드로 법령명 검색 |
+| `semantic_search` | 자연어 하이브리드 검색 (preset/law_filter로 범위 지정) |
+
+`semantic_search`에는 PostgreSQL + pgvector가 필요합니다 (위 "준비" 참고).
+모든 결과에는 출처 URL과 참고용 고지가 포함되며, 서버 instructions가 LLM에게
+"인용 시 반드시 출처를 함께 제시할 것"을 지시합니다.
+
 ## 저장소 위치 지정
 
 `legalize-kr` 아카이브는 다음 순서로 자동 탐지합니다:
